@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ניתוח פרוטוקולי ישיבות מטה והנהלה</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Visualization & Content Choices: 
+        - File Upload: Info -> User-provided .txt or .docx protocol. Goal -> Enable analysis of user's own data. Viz -> File input. Interaction -> User selects file, clicks "Analyze". Justification -> Core functionality for user-specific data.
+        - Parsed Tasks from tables ("סטטוס משימות", "סיכום משימות"): Info -> Task description, responsible, topic. Goal -> Clear task tracking from structured parts of the report. Viz -> Table row. Interaction -> Filter/Sort. Justification -> Structured data presentation.
+        - Parsed Tasks from "סיכום" text: Info -> Task description, responsible (if mentioned), due date (if mentioned). Goal -> Capture all actionable items from unstructured text. Viz -> Table row. Interaction -> Filter/Sort. Justification -> Comprehensive task capture.
+        - Aggregated tasks by responsible person: Info -> Count of tasks per person. Goal -> Workload overview. Viz -> Bar Chart (Chart.js). Interaction -> Hover for details. Justification -> Quick assessment of responsibilities.
+        - Aggregated tasks by source meeting (file name): Info -> Count of tasks per uploaded file. Goal -> Understand task origin volume. Viz -> Pie Chart (Chart.js). Interaction -> Hover for details. Justification -> Comparison of meeting outcomes from different files.
+        - CONFIRMING NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Rubik', sans-serif;
+            background-color: #fffbeb; /* amber-50 */
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px; /* Max width for charts */
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px; /* Base height */
+            max-height: 350px; /* Max height */
+        }
+        @media (min-width: 768px) { /* md breakpoint */
+            .chart-container {
+                height: 350px;
+                max-height: 400px;
+            }
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #cbd5e0; /* Tailwind gray-400 */
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #a0aec0; /* Tailwind gray-500 */
+        }
+        /* Ensure table header is sticky for scrolling tables */
+        .table-sticky-header th {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            background-color: #f3f4f6; /* Tailwind gray-100, ensures visibility */
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            border-left-color: #0d9488; /* teal-600 */
+            animation: spin 1s linear infinite;
+            display: none; /* Hidden by default */
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="p-4 md:p-6 text-stone-800">
+    <div class="container mx-auto max-w-7xl bg-white p-5 md:p-8 rounded-xl shadow-2xl">
+        <header class="mb-8 text-center border-b border-stone-300 pb-6">
+            <h1 class="text-3xl md:text-4xl font-bold text-teal-700">ניתוח פרוטוקולי ישיבות מטה והנהלה</h1>
+            <p class="text-stone-600 mt-2 text-sm md:text-base">העלה פרוטוקול, חלץ משימות וקבל סקירה אינטראקטיבית</p>
+        </header>
+
+        <section id="fileUploadSection" class="mb-8 p-6 bg-amber-100 rounded-lg shadow">
+            <h2 class="text-xl font-semibold text-teal-600 mb-3">העלאת פרוטוקול</h2>
+            <div class="flex flex-col sm:flex-row items-center gap-4">
+                <input type="file" id="protocolFile" accept=".txt,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" class="block w-full text-sm text-stone-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-teal-50 file:text-teal-700 hover:file:bg-teal-100 cursor-pointer p-2 border border-stone-300 rounded-md">
+                <button id="analyzeFileButton" class="bg-teal-600 hover:bg-teal-700 text-white font-semibold py-2 px-6 rounded-full flex items-center justify-center w-full sm:w-auto">
+                    <svg class="w-5 h-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    נתח קובץ
+                </button>
+                <div id="loadingSpinner" class="spinner"></div>
+            </div>
+            <p id="fileError" class="text-red-600 text-sm mt-2 hidden"></p>
+        </section>
+        
+        <div id="analysisResults" class="hidden">
+            <section id="introduction" class="mb-8 p-4 bg-amber-50 rounded-lg text-stone-700 text-sm">
+                <h2 class="text-xl font-semibold text-teal-600 mb-2">תוצאות הניתוח:</h2>
+                <p id="analysisIntroText">להלן המשימות שחולצו מהקובץ "<span id="analyzedFileName" class="font-semibold"></span>". ניתן לסנן ולמיין את המשימות, ולצפות בתרשימים המסכמים את חלוקת האחריות ומקור המשימות.</p>
+            </section>
+
+            <section id="filtersSection" class="mb-6 p-4 bg-stone-50 rounded-lg shadow-sm">
+                <h3 class="text-lg font-semibold text-teal-600 mb-3">סינון ומיון משימות:</h3>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                        <label for="responsibleFilter" class="block text-sm font-medium text-stone-700">סנן לפי אחראי:</label>
+                        <select id="responsibleFilter" class="mt-1 block w-full p-2 border border-stone-300 rounded-md shadow-sm focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
+                            <option value="הכל">הכל</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="meetingFilter" class="block text-sm font-medium text-stone-700">סנן לפי ישיבה (קובץ):</label>
+                        <select id="meetingFilter" class="mt-1 block w-full p-2 border border-stone-300 rounded-md shadow-sm focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
+                            <option value="הכל">הכל</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="sortBy" class="block text-sm font-medium text-stone-700">מיין לפי:</label>
+                        <select id="sortBy" class="mt-1 block w-full p-2 border border-stone-300 rounded-md shadow-sm focus:ring-teal-500 focus:border-teal-500 sm:text-sm">
+                            <option value="default">ברירת מחדל (לפי סדר הופעה)</option>
+                            <option value="dueDate">תאריך יעד</option>
+                            <option value="responsible">אחראי</option>
+                        </select>
+                    </div>
+                </div>
+            </section>
+
+            <section id="tasksDashboard" class="mb-8">
+                <h3 class="text-xl font-semibold text-teal-600 mb-4">לוח משימות:</h3>
+                <div class="overflow-x-auto bg-white rounded-lg shadow border border-stone-200" style="max-height: 500px;">
+                    <table class="min-w-full divide-y divide-stone-200">
+                        <thead class="bg-stone-100 table-sticky-header">
+                            <tr>
+                                <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-stone-600 uppercase tracking-wider">#</th>
+                                <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-stone-600 uppercase tracking-wider">תיאור המשימה</th>
+                                <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-stone-600 uppercase tracking-wider">נושא קשור</th>
+                                <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-stone-600 uppercase tracking-wider">אחראי/ם</th>
+                                <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-stone-600 uppercase tracking-wider">תאריך יעד</th>
+                                <th scope="col" class="px-4 py-3 text-right text-xs font-semibold text-stone-600 uppercase tracking-wider">מקור (קובץ)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tasksTableBody" class="bg-white divide-y divide-stone-200 text-sm">
+                        </tbody>
+                    </table>
+                </div>
+                <p id="noTasksMessage" class="mt-4 text-center text-stone-500 hidden">לא נמצאו משימות התואמות לסינון הנוכחי.</p>
+            </section>
+
+            <section id="chartsSection" class="mb-8">
+                <h3 class="text-xl font-semibold text-teal-600 mb-6">ניתוח גרפי של משימות:</h3>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                    <div class="p-4 bg-stone-50 rounded-lg shadow-sm">
+                        <h4 class="text-md font-semibold text-stone-700 mb-3 text-center">משימות לפי אחראי</h4>
+                        <div class="chart-container">
+                            <canvas id="responsibleChart"></canvas>
+                        </div>
+                    </div>
+                    <div class="p-4 bg-stone-50 rounded-lg shadow-sm">
+                        <h4 class="text-md font-semibold text-stone-700 mb-3 text-center">משימות לפי קובץ מקור</h4>
+                        <div class="chart-container">
+                            <canvas id="meetingChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <footer class="mt-12 pt-6 border-t border-stone-300 text-center text-xs text-stone-500">
+            <p>כלי ניתוח פרוטוקולים - נוצר עבור הדגמה</p>
+        </footer>
+    </div>
+
+<script>
+    let allTasks = [];
+    let currentFilesAnalyzed = []; // To keep track of analyzed file names for the meeting filter
+    let responsibleChartInstance = null;
+    let meetingChartInstance = null;
+    const KNOWN_RESPONSIBLES = ['רן', 'רון', 'גל', 'יעקב', 'דליה', 'אבנר', 'עפר', 'דורון', 'מאיה', 'ניר', 'ארז', 'ענת', 'גיל', 'מורן', 'אייל', 'אקי', 'תמיר', 'יפעת פולקמן', 'נועם טריגר', 'שטראוס'];
+    const MONTH_MAP_HE = {
+        'ינואר': 0, 'פברואר': 1, 'מרץ': 2, 'אפריל': 3, 'מאי': 4, 'יוני': 5,
+        'יולי': 6, 'אוגוסט': 7, 'ספטמבר': 8, 'אוקטובר': 9, 'נובמבר': 10, 'דצמבר': 11
+    };
+
+    const loadingSpinner = document.getElementById('loadingSpinner');
+    const fileErrorEl = document.getElementById('fileError');
+    const analysisResultsEl = document.getElementById('analysisResults');
+    const analyzedFileNameEl = document.getElementById('analyzedFileName');
+
+
+    function getProtocolYear(dateStr) {
+        if (!dateStr) return new Date().getFullYear();
+        const match = dateStr.match(/(\d{1,2})\.(\d{1,2})\.(\d{2,4})/);
+        if (match) {
+            let year = parseInt(match[3], 10);
+            return year < 100 ? 2000 + year : year;
+        }
+        // Try to get year from filename if it contains a year-like number
+        const yearInFilenameMatch = dateStr.match(/\b(20\d{2})\b/);
+        if (yearInFilenameMatch) return parseInt(yearInFilenameMatch[1], 10);
+        
+        return new Date().getFullYear(); // Fallback
+    }
+    
+    function parseDate(dateString, protocolYear) {
+        if (!dateString) return null;
+        dateString = dateString.trim();
+
+        let match = dateString.match(/^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?$/);
+        if (match) {
+            const day = parseInt(match[1], 10);
+            const month = parseInt(match[2], 10) - 1; 
+            let year = match[3] ? parseInt(match[3], 10) : protocolYear;
+            if (match[3] && year < 100) year += 2000;
+            try { return new Date(year, month, day).toISOString().split('T')[0]; } catch (e) { return null; }
+        }
+
+        for (const monthName in MONTH_MAP_HE) {
+            if (dateString.includes(monthName) && (dateString.startsWith('עד ') || dateString.startsWith('סיום '))) {
+                const monthIndex = MONTH_MAP_HE[monthName];
+                try { return new Date(protocolYear, monthIndex + 1, 0).toISOString().split('T')[0]; } catch (e) { return null; }
+            }
+        }
+        for (const monthName in MONTH_MAP_HE) {
+            if (dateString.includes(monthName) && dateString.startsWith('תחילת ')) {
+                const monthIndex = MONTH_MAP_HE[monthName];
+                 try { return new Date(protocolYear, monthIndex, 1).toISOString().split('T')[0]; } catch (e) { return null; }
+            }
+        }
+        return null;
+    }
+
+    function cleanResponsible(responsibleText) {
+        if (!responsibleText) return [];
+        let cleaned = responsibleText.replace(/מול/g, 'ו').replace(/\//g, 'ו');
+        return cleaned.split('ו').map(name => name.trim()).filter(name => name.length > 0 && KNOWN_RESPONSIBLES.includes(name));
+    }
+    
+    function parseReport(reportText, sourceFileName) {
+        const lines = reportText.split('\n');
+        const tasks = [];
+        let inTableMode = false;
+        let tableType = ''; 
+        
+        // Try to extract a date from the first few lines of the report text itself to determine the protocol year
+        let reportDateHeader = '';
+        for(let i=0; i < Math.min(5, lines.length); i++) {
+            const dateMatch = lines[i].match(/(\d{1,2}\.\d{1,2}\.\d{2,4})/);
+            if (dateMatch) {
+                reportDateHeader = dateMatch[0];
+                break;
+            }
+        }
+        const protocolYear = getProtocolYear(reportDateHeader || sourceFileName);
+
+
+        lines.forEach(line => {
+            line = line.trim();
+            if (line.startsWith('נושא,הערות- משימות,אחריות')) {
+                inTableMode = true;
+                if (line.includes('סטטוס') || lines.indexOf(line) < lines.findIndex(l => l.toLowerCase().startsWith('סיכום'))) {
+                    tableType = 'סטטוס משימות מישיבה קודמת';
+                } else {
+                    tableType = 'סיכום משימות';
+                }
+                return;
+            }
+            if (line.toLowerCase().startsWith('סיכום') && !line.includes('משימות') && !line.startsWith('סיכום משימות')) { 
+                inTableMode = false;
+                return;
+            }
+
+            if (inTableMode && line) {
+                const parts = line.split(',');
+                if (parts.length >= 2) { // Need at least topic/description and responsible
+                    const topic = parts[0].trim();
+                    const responsibleRaw = parts[parts.length - 1].trim();
+                    const description = parts.slice(1, parts.length - 1).join(', ').trim();
+                    
+                    if (description || topic) { // A task can be just a topic with a responsible person
+                         tasks.push({
+                            id: 'task' + Date.now() + Math.random(),
+                            description: description || topic, // Use topic if description is empty
+                            topic: topic,
+                            responsible: cleanResponsible(responsibleRaw),
+                            responsibleRaw: responsibleRaw,
+                            sourceMeetingDate: sourceFileName, // Use file name as source
+                            dueDate: null, 
+                            dueDateRaw: '',
+                            status: 'פתוח',
+                            context: `מתוך טבלת "${tableType}"`
+                        });
+                    }
+                }
+            } else if (!inTableMode && line) { 
+                const taskKeywords = ['להוסיף', 'לבנות', 'לסכם', 'לקבל אישור', 'לבדוק', 'יציג', 'יעביר', 'לקדם', 'להכין', 'ליישם', 'נדרש', 'לתאם', 'לוודא', 'להסדיר', 'יחשוב על', 'לעבור על', 'בוחנים', 'פגישה עם', 'מקדמים', 'ממשיך משא ומתן', 'בחינת כניסה', 'מנסה לקדם', 'להסדיר מול'];
+                let foundKeyword = false;
+                for (const keyword of taskKeywords) {
+                    if (line.includes(keyword)) {
+                        foundKeyword = true;
+                        break;
+                    }
+                }
+
+                if (foundKeyword) {
+                    let taskDescription = line;
+                    let responsiblePersons = [];
+                    let dueDate = null;
+                    let dueDateRaw = '';
+
+                    KNOWN_RESPONSIBLES.forEach(name => {
+                        if (line.includes(name)) {
+                            responsiblePersons.push(name);
+                        }
+                    });
+                    if (responsiblePersons.length === 0 && line.includes("אחריות")) {
+                         const afterAkhrayut = line.split("אחריות")[1];
+                         if (afterAkhrayut) {
+                             KNOWN_RESPONSIBLES.forEach(name => {
+                                 if (afterAkhrayut.includes(name)) responsiblePersons.push(name);
+                             });
+                         }
+                    }
+
+                    const datePatterns = [
+                        { regex: /(\d{1,2}\.\d{1,2}(?:\.\d{2,4})?)/, type: 'specific' },
+                        { regex: /עד (\S+)/, type: 'month_עד' }, 
+                        { regex: /תחילת (\S+)/, type: 'month_תחילת' } 
+                    ];
+
+                    for (const pattern of datePatterns) {
+                        const match = line.match(pattern.regex);
+                        if (match) {
+                            dueDateRaw = match[0]; 
+                            if (pattern.type === 'specific') {
+                                dueDate = parseDate(match[1], protocolYear);
+                            } else if (pattern.type === 'month_עד') {
+                                const monthName = match[1];
+                                if (MONTH_MAP_HE[monthName] !== undefined) {
+                                    dueDate = parseDate(`עד ${monthName}`, protocolYear);
+                                }
+                            } else if (pattern.type === 'month_תחילת') {
+                                const monthName = match[1];
+                                if (MONTH_MAP_HE[monthName] !== undefined) {
+                                     dueDate = parseDate(`תחילת ${monthName}`, protocolYear);
+                                }
+                            }
+                            if (dueDate) { // If a date was parsed, try to remove it from description
+                                taskDescription = taskDescription.replace(dueDateRaw, '').trim();
+                                break; 
+                            }
+                        }
+                    }
+                    
+                    tasks.push({
+                        id: 'task' + Date.now() + Math.random(),
+                        description: taskDescription,
+                        topic: 'מתוך סיכום הישיבה',
+                        responsible: responsiblePersons,
+                        responsibleRaw: responsiblePersons.join(', '),
+                        sourceMeetingDate: sourceFileName, // Use file name as source
+                        dueDate: dueDate,
+                        dueDateRaw: dueDateRaw,
+                        status: 'פתוח',
+                        context: 'מתוך סעיף "סיכום"'
+                    });
+                }
+            }
+        });
+        return tasks;
+    }
+
+    function renderTable(tasksToRender) {
+        const tbody = document.getElementById('tasksTableBody');
+        const noTasksMsg = document.getElementById('noTasksMessage');
+        tbody.innerHTML = '';
+        if (tasksToRender.length === 0) {
+            noTasksMsg.classList.remove('hidden');
+            return;
+        }
+        noTasksMsg.classList.add('hidden');
+
+        tasksToRender.forEach((task, index) => {
+            const row = tbody.insertRow();
+            row.insertCell().textContent = index + 1;
+            row.insertCell().textContent = task.description;
+            row.insertCell().textContent = task.topic || '-';
+            row.insertCell().textContent = task.responsibleRaw || (task.responsible.length > 0 ? task.responsible.join(', ') : 'לא צוין');
+            row.insertCell().textContent = task.dueDate ? new Date(task.dueDate).toLocaleDateString('he-IL') : (task.dueDateRaw || 'לא צוין');
+            row.insertCell().textContent = task.sourceMeetingDate;
+        });
+    }
+    
+    function wrapText(text, maxWidth) {
+        if (!text) return [''];
+        const stringText = String(text);
+        if (stringText.length <= maxWidth) return [stringText];
+        
+        const words = stringText.split(' ');
+        let lines = [];
+        let currentLine = words[0];
+        for (let i = 1; i < words.length; i++) {
+            if (currentLine.length + words[i].length + 1 <= maxWidth) {
+                currentLine += ' ' + words[i];
+            } else {
+                lines.push(currentLine);
+                currentLine = words[i];
+            }
+        }
+        lines.push(currentLine);
+        return lines;
+    }
+
+    function renderCharts(tasksForCharts) {
+        const responsibleCounts = {};
+        tasksForCharts.forEach(task => {
+            task.responsible.forEach(person => {
+                responsibleCounts[person] = (responsibleCounts[person] || 0) + 1;
+            });
+        });
+        const responsibleLabels = Object.keys(responsibleCounts);
+        const responsibleData = Object.values(responsibleCounts);
+
+        const responsibleCtx = document.getElementById('responsibleChart').getContext('2d');
+        if (responsibleChartInstance) responsibleChartInstance.destroy();
+        responsibleChartInstance = new Chart(responsibleCtx, {
+            type: 'bar',
+            data: {
+                labels: responsibleLabels,
+                datasets: [{
+                    label: 'מספר משימות',
+                    data: responsibleData,
+                    backgroundColor: 'rgba(20, 150, 150, 0.6)', 
+                    borderColor: 'rgba(15, 128, 128, 1)',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } }, x: { ticks: { callback: function(value) { return wrapText(this.getLabelForValue(value), 10); } } } },
+                plugins: { legend: { display: false }, title: { display: false }, tooltip: { bodyFont: { family: 'Rubik'}, titleFont: { family: 'Rubik'} } }
+            }
+        });
+
+        const meetingCounts = {};
+        tasksForCharts.forEach(task => {
+            meetingCounts[task.sourceMeetingDate] = (meetingCounts[task.sourceMeetingDate] || 0) + 1;
+        });
+        const meetingLabels = Object.keys(meetingCounts);
+        const meetingData = Object.values(meetingCounts);
+
+        const meetingCtx = document.getElementById('meetingChart').getContext('2d');
+        if (meetingChartInstance) meetingChartInstance.destroy();
+        meetingChartInstance = new Chart(meetingCtx, {
+            type: 'pie',
+            data: {
+                labels: meetingLabels.map(label => `קובץ: ${label}`),
+                datasets: [{
+                    label: 'משימות לפי קובץ',
+                    data: meetingData,
+                    backgroundColor: ['rgba(255, 199, 100, 0.7)', 'rgba(100, 199, 255, 0.7)', 'rgba(150, 100, 255, 0.7)', 'rgba(255, 100, 150, 0.7)'], 
+                    borderColor: ['rgba(255, 159, 64, 1)', 'rgba(54, 162, 235, 1)', 'rgba(120, 50, 235, 1)', 'rgba(235, 50, 120, 1)'],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { position: 'top', labels: {font: {family: 'Rubik'}} }, title: { display: false }, tooltip: { bodyFont: { family: 'Rubik'}, titleFont: { family: 'Rubik'} } }
+            }
+        });
+    }
+
+    function populateFilters(tasks) {
+        const responsibleSet = new Set();
+        const meetingSet = new Set(); // For file names
+        tasks.forEach(task => {
+            task.responsible.forEach(person => responsibleSet.add(person));
+            meetingSet.add(task.sourceMeetingDate);
+        });
+        
+        const responsibleFilterEl = document.getElementById('responsibleFilter');
+        responsibleFilterEl.innerHTML = '<option value="הכל">הכל</option>'; // Reset
+        Array.from(responsibleSet).sort().forEach(person => {
+            const option = document.createElement('option');
+            option.value = person;
+            option.textContent = person;
+            responsibleFilterEl.appendChild(option);
+        });
+
+        const meetingFilterEl = document.getElementById('meetingFilter');
+        meetingFilterEl.innerHTML = '<option value="הכל">הכל</option>'; // Reset
+        currentFilesAnalyzed = Array.from(meetingSet).sort(); // Update global list of analyzed files
+        currentFilesAnalyzed.forEach(fileName => {
+            const option = document.createElement('option');
+            option.value = fileName;
+            option.textContent = `קובץ: ${fileName}`;
+            meetingFilterEl.appendChild(option);
+        });
+    }
+    
+    function applyFiltersAndSort() {
+        let filteredTasks = [...allTasks];
+        const responsibleFilterValue = document.getElementById('responsibleFilter').value;
+        const meetingFilterValue = document.getElementById('meetingFilter').value;
+        const sortByValue = document.getElementById('sortBy').value;
+
+        if (responsibleFilterValue !== 'הכל') {
+            filteredTasks = filteredTasks.filter(task => task.responsible.includes(responsibleFilterValue));
+        }
+        if (meetingFilterValue !== 'הכל') {
+            filteredTasks = filteredTasks.filter(task => task.sourceMeetingDate === meetingFilterValue);
+        }
+
+        if (sortByValue === 'dueDate') {
+            filteredTasks.sort((a, b) => {
+                const dateA = a.dueDate ? new Date(a.dueDate) : new Date('9999-12-31'); 
+                const dateB = b.dueDate ? new Date(b.dueDate) : new Date('9999-12-31');
+                return dateA - dateB;
+            });
+        } else if (sortByValue === 'responsible') {
+            filteredTasks.sort((a, b) => (a.responsibleRaw || '').localeCompare(b.responsibleRaw || '', 'he'));
+        }
+        
+        renderTable(filteredTasks);
+        renderCharts(filteredTasks); 
+    }
+    
+    document.getElementById('analyzeFileButton').addEventListener('click', () => {
+        const fileInput = document.getElementById('protocolFile');
+        const file = fileInput.files[0];
+        fileErrorEl.classList.add('hidden');
+        analysisResultsEl.classList.add('hidden');
+
+
+        if (file) {
+            loadingSpinner.style.display = 'block';
+            const reader = new FileReader();
+            const fileName = file.name;
+
+            reader.onload = function(event) {
+                const fileContent = event.target.result;
+                let textPromise;
+
+                if (file.name.endsWith('.docx')) {
+                    textPromise = mammoth.extractRawText({ arrayBuffer: fileContent })
+                                      .then(result => result.value)
+                                      .catch(err => {
+                                          console.error("Error processing .docx file:", err);
+                                          fileErrorEl.textContent = "שגיאה בעיבוד קובץ DOCX. ודא שהקובץ תקין.";
+                                          fileErrorEl.classList.remove('hidden');
+                                          loadingSpinner.style.display = 'none';
+                                          return Promise.reject();
+                                      });
+                } else if (file.name.endsWith('.txt')) {
+                    textPromise = Promise.resolve(new TextDecoder().decode(fileContent)); // Assuming UTF-8 for .txt
+                } else {
+                    fileErrorEl.textContent = "סוג קובץ לא נתמך. אנא העלה קובץ TXT או DOCX.";
+                    fileErrorEl.classList.remove('hidden');
+                    loadingSpinner.style.display = 'none';
+                    return;
+                }
+
+                textPromise.then(text => {
+                    if (text === undefined) return; // Error handled in catch
+                    const newTasks = parseReport(text, fileName);
+                    allTasks = [...newTasks]; // Replace with new tasks, or merge if desired: [...allTasks, ...newTasks]
+                    
+                    if (!currentFilesAnalyzed.includes(fileName)) {
+                       currentFilesAnalyzed.push(fileName);
+                    }
+
+                    populateFilters(allTasks); // Repopulate filters with all unique responsibles and file names
+                    applyFiltersAndSort(); // This will render table and charts
+                    
+                    analyzedFileNameEl.textContent = fileName;
+                    analysisResultsEl.classList.remove('hidden');
+                    loadingSpinner.style.display = 'none';
+                    fileInput.value = ''; // Reset file input
+                }).catch(() => {
+                    // Error already handled by mammoth or initial check
+                    loadingSpinner.style.display = 'none';
+                });
+            };
+
+            reader.onerror = function() {
+                fileErrorEl.textContent = "שגיאה בקריאת הקובץ.";
+                fileErrorEl.classList.remove('hidden');
+                loadingSpinner.style.display = 'none';
+            };
+
+            if (file.name.endsWith('.docx') || file.name.endsWith('.txt')) {
+                 reader.readAsArrayBuffer(file); // Read as ArrayBuffer for both, Mammoth handles it, TextDecoder for .txt
+            } else {
+                 fileErrorEl.textContent = "סוג קובץ לא נתמך. אנא העלה קובץ TXT או DOCX.";
+                 fileErrorEl.classList.remove('hidden');
+                 loadingSpinner.style.display = 'none';
+            }
+
+        } else {
+            fileErrorEl.textContent = "אנא בחר קובץ תחילה.";
+            fileErrorEl.classList.remove('hidden');
+        }
+    });
+
+
+    document.addEventListener('DOMContentLoaded', () => {
+        // Initial setup if there were pre-loaded tasks (currently none, relies on upload)
+        if (allTasks.length === 0) {
+            document.getElementById('noTasksMessage').textContent = "אנא העלה קובץ פרוטוקול כדי להתחיל בניתוח.";
+            document.getElementById('noTasksMessage').classList.remove('hidden');
+        }
+        // Add event listeners for filters
+        document.getElementById('responsibleFilter').addEventListener('change', applyFiltersAndSort);
+        document.getElementById('meetingFilter').addEventListener('change', applyFiltersAndSort);
+        document.getElementById('sortBy').addEventListener('change', applyFiltersAndSort);
+    });
+
+</script>
+</body>
+</html>
